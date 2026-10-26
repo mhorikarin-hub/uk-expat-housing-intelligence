@@ -1,0 +1,15 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_crimes",
+  description: "Cleaned Metropolitan Police crime data with GEOGRAPHY points"
+}
+
+SELECT
+  *,
+  ST_GEOGPOINT(CAST(longitude AS FLOAT64), CAST(latitude AS FLOAT64)) AS geom
+FROM
+  ${ref("raw_met_crimes")}
+WHERE
+  latitude IS NOT NULL
+  AND longitude IS NOT NULL

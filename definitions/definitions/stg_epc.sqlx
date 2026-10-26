@@ -1,0 +1,13 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_epc",
+  description: "Cleaned domestic EPC ratings for Ealing / Acton properties"
+}
+
+SELECT
+  *
+FROM
+  ${ref("raw_ealing_epc")}
+WHERE
+  postcode IS NOT NULL

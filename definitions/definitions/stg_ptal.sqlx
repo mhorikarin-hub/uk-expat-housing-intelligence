@@ -1,0 +1,11 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_ptal",
+  description: "Cleaned TfL PTAL accessibility ratings"
+}
+
+SELECT
+  *
+FROM
+  ${ref("raw_tfl_ptal")}
