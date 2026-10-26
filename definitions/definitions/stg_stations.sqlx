@@ -1,0 +1,38 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_stations",
+  description: "Cleaned station commute times with GEOGRAPHY points"
+}
+
+WITH base AS (
+  SELECT
+    station_name,
+    primary_lines,
+    -- カラム名に依存せず、位置と型を直接指定
+    mins_to_bond_st__West_End_ AS mins_to_bond_street,
+    mins_to_bank__City_ AS mins_to_bank,
+    CAST(lat AS FLOAT64) AS latitude,
+    CAST(lng AS FLOAT64) AS longitude,
+    TO_JSON_STRING(t) AS json_row
+  FROM
+    ${ref("raw_station_commute")} AS t
+  WHERE
+    station_name IS NOT NULL
+    AND lat IS NOT NULL
+    AND lng IS NOT NULL
+)
+
+SELECT
+  station_name,
+  primary_lines,
+  mins_to_bond_street,
+  mins_to_bank,
+  -- JSONからCanary WharfとWaterlooの値を抽出
+  CAST(JSON_VALUE(json_row, '$."mins_to_canary_wharf___________________"') AS INT64) AS mins_to_canary_wharf,
+  CAST(JSON_VALUE(json_row, '$."mins_to_waterloo______________________"') AS INT64) AS mins_to_waterloo,
+  latitude,
+  longitude,
+  ST_GEOGPOINT(longitude, latitude) AS geom
+FROM
+  base
