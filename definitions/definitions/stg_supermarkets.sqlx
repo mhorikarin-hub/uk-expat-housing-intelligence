@@ -1,0 +1,15 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_supermarkets",
+  description: "Cleaned OpenStreetMap supermarkets with GEOGRAPHY points"
+}
+
+SELECT
+  *,
+  ST_GEOGPOINT(CAST(longitude AS FLOAT64), CAST(latitude AS FLOAT64)) AS geom
+FROM
+  ${ref("raw_osm_supermarkets")}
+WHERE
+  latitude IS NOT NULL
+  AND longitude IS NOT NULL

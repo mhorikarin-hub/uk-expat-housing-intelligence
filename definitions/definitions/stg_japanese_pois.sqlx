@@ -1,0 +1,22 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_japanese_pois",
+  description: "Japanese POIs (supermarkets, schools, clinics) with GEOGRAPHY points"
+}
+
+SELECT
+  name_ja,
+  name_en,
+  category_ja,
+  category_en,
+  postcode,
+  address,
+  CAST(latitude AS FLOAT64) AS latitude,
+  CAST(longitude AS FLOAT64) AS longitude,
+  ST_GEOGPOINT(CAST(longitude AS FLOAT64), CAST(latitude AS FLOAT64)) AS geom
+FROM
+  ${ref("raw_japanese_pois")}
+WHERE
+  latitude IS NOT NULL
+  AND longitude IS NOT NULL
