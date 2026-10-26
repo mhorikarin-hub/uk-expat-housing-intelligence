@@ -1,0 +1,18 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "stg_postcodes",
+  description: "Cleaned W3/W5 Postcodes with GEOGRAPHY points"
+}
+
+SELECT
+  postcode,
+  latitude,
+  longitude,
+  lsoa_code,
+  ST_GEOGPOINT(longitude, latitude) AS geom
+FROM
+  ${ref("dim_postcodes_w3_w5")}
+WHERE
+  latitude IS NOT NULL
+  AND longitude IS NOT NULL
