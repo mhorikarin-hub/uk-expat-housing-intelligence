@@ -2,7 +2,7 @@ config {
   type: "view",
   schema: "uk_housing_acton",
   name: "dim_acton_facilities",
-  description: "Unified facility landmark view: Japanese infrastructure, supermarkets, and stations"
+  description: "Unified facility landmark view with postcode: Japanese infrastructure, supermarkets, and stations"
 }
 
 -- 1. 日系施設（学校・塾・カフェ・店舗）
@@ -12,6 +12,7 @@ SELECT
   category_en AS sub_category,
   name_en AS facility_name,
   name_ja AS facility_detail,
+  postcode,
   latitude,
   longitude,
   geom
@@ -27,6 +28,7 @@ SELECT
   brand AS sub_category,
   name AS facility_name,
   COALESCE(brand, 'Other Supermarket') AS facility_detail,
+  postcode,
   latitude,
   longitude,
   geom
@@ -42,6 +44,7 @@ SELECT
   primary_lines AS sub_category,
   station_name AS facility_name,
   primary_lines AS facility_detail,
+  postcode,
   latitude,
   longitude,
   geom
