@@ -1,0 +1,49 @@
+config {
+  type: "view",
+  schema: "uk_housing_acton",
+  name: "dim_acton_facilities",
+  description: "Unified facility landmark view: Japanese infrastructure, supermarkets, and stations"
+}
+
+-- 1. 日系施設（学校・塾・カフェ・店舗）
+SELECT
+  'Japanese Facility' AS category_en,
+  '日系施設' AS category_ja,
+  category_en AS sub_category,
+  name_en AS facility_name,
+  name_ja AS facility_detail,
+  latitude,
+  longitude,
+  geom
+FROM
+  ${ref("stg_japanese_pois")}
+
+UNION ALL
+
+-- 2. スーパーマーケット（Waitrose, Sainsbury's, Morrisons等）
+SELECT
+  'Supermarket' AS category_en,
+  'スーパーマーケット' AS category_ja,
+  brand AS sub_category,
+  name AS facility_name,
+  COALESCE(brand, 'Other Supermarket') AS facility_detail,
+  latitude,
+  longitude,
+  geom
+FROM
+  ${ref("stg_supermarkets")}
+
+UNION ALL
+
+-- 3. 主要駅（チューブ・Overground・Elizabeth Line）
+SELECT
+  'Station' AS category_en,
+  '駅' AS category_ja,
+  primary_lines AS sub_category,
+  station_name AS facility_name,
+  primary_lines AS facility_detail,
+  latitude,
+  longitude,
+  geom
+FROM
+  ${ref("stg_stations")}
