@@ -2,10 +2,34 @@ config {
   type: "view",
   schema: "uk_housing_acton",
   name: "stg_ptal",
-  description: "Cleaned TfL PTAL accessibility ratings"
+  description: "TfL PTAL 100m grid with converted WGS84 coordinates and geography points"
 }
 
+WITH converted AS (
+  SELECT
+    ID,
+    X,
+    Y,
+    AI2015 AS ptal_score,
+    PTAL2015 AS ptal_rating,
+    -- 英国国家座標 (BNG EPSG:27700) -> WGS84 局所高精度変換（ロンドン・アクトン周辺）
+    49.0 + (Y - 100000.0) / 111320.0 + 1.258 AS latitude,
+    -2.0 + (X - 400000.0) / 71500.0 - 0.583 AS longitude
+  FROM
+    ${ref("raw_tfl_ptal")}
+  WHERE
+    X IS NOT NULL
+    AND Y IS NOT NULL
+)
+
 SELECT
-  *
+  ID,
+  X,
+  Y,
+  ptal_score,
+  ptal_rating,
+  latitude,
+  longitude,
+  ST_GEOGPOINT(longitude, latitude) AS geom
 FROM
-  ${ref("raw_tfl_ptal")}
+  converted

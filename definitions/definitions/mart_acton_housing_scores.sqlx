@@ -1,0 +1,191 @@
+config {
+  type: "table",
+  schema: "uk_housing_acton",
+  name: "mart_acton_housing_scores",
+  description: "Comprehensive housing evaluation mart by postcode in Acton area"
+}
+
+WITH
+-- 1. EPC住宅性能: 同一住所（address）単位で最新の検査日（inspection_date）に絞り込み、ポストコード単位で集計
+latest_epc AS (
+  SELECT
+    postcode,
+    current_energy_rating,
+    current_energy_efficiency
+  FROM
+    ${ref("stg_epc")}
+  WHERE
+    postcode IS NOT NULL
+    AND address IS NOT NULL
+  QUALIFY
+    ROW_NUMBER() OVER (
+      PARTITION BY address, postcode
+      ORDER BY COALESCE(inspection_date, lodgement_date) DESC
+    ) = 1
+),
+
+epc_summary AS (
+  SELECT
+    REPLACE(postcode, ' ', '') AS clean_postcode,
+    AVG(current_energy_efficiency) AS avg_epc_efficiency_score,
+    COUNT(1) AS epc_sample_count
+  FROM
+    latest_epc
+  GROUP BY
+    clean_postcode
+),
+
+-- 2. ポストコードマスタ（主軸）
+base_postcodes AS (
+  SELECT
+    postcode,
+    REPLACE(postcode, ' ', '') AS clean_postcode,
+    latitude,
+    longitude,
+    geom
+  FROM
+    ${ref("stg_postcodes")}
+),
+
+-- 3. 最寄り駅・主要ターミナル通勤時間（ST_DISTANCE で最短を判定）
+nearest_stations AS (
+  SELECT
+    p.postcode,
+    ARRAY_AGG(
+      STRUCT(
+        s.station_name,
+        s.primary_lines,
+        s.mins_to_bond_street,
+        s.mins_to_bank,
+        s.mins_to_canary_wharf,
+        s.mins_to_waterloo,
+        ST_DISTANCE(p.geom, s.geom) AS dist_meters
+      )
+      ORDER BY ST_DISTANCE(p.geom, s.geom) ASC
+      LIMIT 1
+    )[OFFSET(0)] AS nearest_station
+  FROM
+    base_postcodes p
+  CROSS JOIN
+    ${ref("stg_stations")} s
+  GROUP BY
+    p.postcode
+),
+
+-- 4. 日系施設（WA Cafe、前田学園等）までの最短距離
+nearest_japanese_pois AS (
+  SELECT
+    p.postcode,
+    ARRAY_AGG(
+      STRUCT(
+        j.name_en AS poi_name,
+        j.category_en AS category,
+        ST_DISTANCE(p.geom, j.geom) AS dist_meters
+      )
+      ORDER BY ST_DISTANCE(p.geom, j.geom) ASC
+      LIMIT 1
+    )[OFFSET(0)] AS nearest_poi
+  FROM
+    base_postcodes p
+  CROSS JOIN
+    ${ref("stg_japanese_pois")} j
+  GROUP BY
+    p.postcode
+),
+
+-- 5. 最寄りスーパーまでの距離（OSM）
+nearest_supermarkets AS (
+  SELECT
+    p.postcode,
+    MIN(ST_DISTANCE(p.geom, sm.geom)) AS dist_to_nearest_supermarket_m
+  FROM
+    base_postcodes p
+  CROSS JOIN
+    ${ref("stg_supermarkets")} sm
+  GROUP BY
+    p.postcode
+),
+
+-- 6. 半径500m以内の犯罪件数（ST_DWITHIN）
+crimes_500m AS (
+  SELECT
+    p.postcode,
+    COUNT(c.geom) AS crime_count_500m
+  FROM
+    base_postcodes p
+  LEFT JOIN
+    ${ref("stg_crimes")} c
+  ON
+    ST_DWITHIN(p.geom, c.geom, 500)
+  GROUP BY
+    p.postcode
+),
+
+-- 7. PTAL 公共交通利便性（ST_DISTANCE で最寄りの100mメッシュ値を空間結合）
+nearest_ptal AS (
+  SELECT
+    p.postcode,
+    ARRAY_AGG(
+      STRUCT(
+        pt.ptal_score,
+        pt.ptal_rating,
+        ST_DISTANCE(p.geom, pt.geom) AS dist_meters
+      )
+      ORDER BY ST_DISTANCE(p.geom, pt.geom) ASC
+      LIMIT 1
+    )[OFFSET(0)] AS ptal
+  FROM
+    base_postcodes p
+  CROSS JOIN
+    ${ref("stg_ptal")} pt
+  GROUP BY
+    p.postcode
+)
+
+-- 最終結合: ポストコードを軸に全指標を統合
+SELECT
+  p.postcode,
+  p.latitude,
+  p.longitude,
+  p.geom,
+
+  -- 交通利便性・最寄り駅
+  ns.nearest_station.station_name AS nearest_station_name,
+  ns.nearest_station.primary_lines AS nearest_station_lines,
+  ns.nearest_station.dist_meters AS dist_to_station_m,
+  ns.nearest_station.mins_to_bond_street,
+  ns.nearest_station.mins_to_bank,
+  ns.nearest_station.mins_to_canary_wharf,
+  ns.nearest_station.mins_to_waterloo,
+
+  -- TfL PTAL（公共交通アクセシビリティ評価）
+  np.ptal.ptal_score,
+  np.ptal.ptal_rating,
+
+  -- 日常生活・日系インフラ
+  jp.nearest_poi.poi_name AS nearest_japanese_poi_name,
+  jp.nearest_poi.category AS nearest_japanese_poi_category,
+  jp.nearest_poi.dist_meters AS dist_to_japanese_poi_m,
+  sm.dist_to_nearest_supermarket_m,
+
+  -- 治安
+  COALESCE(cr.crime_count_500m, 0) AS crime_count_500m,
+
+  -- 住宅性能（同一住所の最新検査のみを集計した平均スコア 1-100）
+  epc.avg_epc_efficiency_score,
+  epc.epc_sample_count
+
+FROM
+  base_postcodes p
+LEFT JOIN
+  nearest_stations ns ON p.postcode = ns.postcode
+LEFT JOIN
+  nearest_ptal np ON p.postcode = np.postcode
+LEFT JOIN
+  nearest_japanese_pois jp ON p.postcode = jp.postcode
+LEFT JOIN
+  nearest_supermarkets sm ON p.postcode = sm.postcode
+LEFT JOIN
+  crimes_500m cr ON p.postcode = cr.postcode
+LEFT JOIN
+  epc_summary epc ON p.clean_postcode = epc.clean_postcode
