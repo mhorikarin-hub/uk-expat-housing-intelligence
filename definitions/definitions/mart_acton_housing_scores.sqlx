@@ -1,191 +1,122 @@
 config {
   type: "table",
   schema: "uk_housing_acton",
-  name: "mart_acton_housing_scores",
-  description: "Comprehensive housing evaluation mart by postcode in Acton area"
+  name: "mart_acton_housing_scores_final",
+  description: "アクトン地区のポストコード単位における住宅環境スコア、月額想定光熱費、ペルソナ別総合スコアを含むマートテーブル",
+  tags: ["mart", "housing", "scores"]
 }
 
-WITH
--- 1. EPC住宅性能: 同一住所（address）単位で最新の検査日（inspection_date）に絞り込み、ポストコード単位で集計
-latest_epc AS (
+WITH current_mart AS (
+  SELECT
+    *
+  FROM
+    `project-f9b55fc0-cc37-44aa-bca.uk_housing_acton.mart_acton_housing_scores`
+),
+
+calculated_features AS (
   SELECT
     postcode,
-    current_energy_rating,
-    current_energy_efficiency
-  FROM
-    ${ref("stg_epc")}
-  WHERE
-    postcode IS NOT NULL
-    AND address IS NOT NULL
-  QUALIFY
-    ROW_NUMBER() OVER (
-      PARTITION BY address, postcode
-      ORDER BY COALESCE(inspection_date, lodgement_date) DESC
-    ) = 1
-),
 
-epc_summary AS (
-  SELECT
-    REPLACE(postcode, ' ', '') AS clean_postcode,
-    AVG(current_energy_efficiency) AS avg_epc_efficiency_score,
-    COUNT(1) AS epc_sample_count
-  FROM
-    latest_epc
-  GROUP BY
-    clean_postcode
-),
+    -- 1. 想定月額エネルギーコスト算出
+    ROUND(
+      CASE
+        WHEN avg_epc_efficiency_score >= 81 THEN 140
+        WHEN avg_epc_efficiency_score >= 69 THEN 180
+        WHEN avg_epc_efficiency_score >= 55 THEN 250
+        WHEN avg_epc_efficiency_score >= 39 THEN 350
+        ELSE 420
+      END,
+      0
+    ) AS estimated_monthly_energy_cost_gbp,
 
--- 2. ポストコードマスタ（主軸）
-base_postcodes AS (
-  SELECT
-    postcode,
-    REPLACE(postcode, ' ', '') AS clean_postcode,
-    latitude,
-    longitude,
-    geom
-  FROM
-    ${ref("stg_postcodes")}
-),
+    -- 2. 各指標の標準化スコア（0〜100点換算）
+    CASE
+      WHEN mins_to_bond_street <= 20 THEN 100.0
+      WHEN mins_to_bond_street >= 40 THEN 0.0
+      ELSE 100.0 - ((mins_to_bond_street - 20) * 5.0)
+    END AS score_transit,
 
--- 3. 最寄り駅・主要ターミナル通勤時間（ST_DISTANCE で最短を判定）
-nearest_stations AS (
-  SELECT
-    p.postcode,
-    ARRAY_AGG(
-      STRUCT(
-        s.station_name,
-        s.primary_lines,
-        s.mins_to_bond_street,
-        s.mins_to_bank,
-        s.mins_to_canary_wharf,
-        s.mins_to_waterloo,
-        ST_DISTANCE(p.geom, s.geom) AS dist_meters
-      )
-      ORDER BY ST_DISTANCE(p.geom, s.geom) ASC
-      LIMIT 1
-    )[OFFSET(0)] AS nearest_station
-  FROM
-    base_postcodes p
-  CROSS JOIN
-    ${ref("stg_stations")} s
-  GROUP BY
-    p.postcode
-),
+    CASE
+      WHEN dist_to_station_m <= 300 THEN 100.0
+      WHEN dist_to_station_m >= 1200 THEN 0.0
+      ELSE 100.0 - ((dist_to_station_m - 300) / 9.0)
+    END AS score_station_dist,
 
--- 4. 日系施設（WA Cafe、前田学園等）までの最短距離
-nearest_japanese_pois AS (
-  SELECT
-    p.postcode,
-    ARRAY_AGG(
-      STRUCT(
-        j.name_en AS poi_name,
-        j.category_en AS category,
-        ST_DISTANCE(p.geom, j.geom) AS dist_meters
-      )
-      ORDER BY ST_DISTANCE(p.geom, j.geom) ASC
-      LIMIT 1
-    )[OFFSET(0)] AS nearest_poi
-  FROM
-    base_postcodes p
-  CROSS JOIN
-    ${ref("stg_japanese_pois")} j
-  GROUP BY
-    p.postcode
-),
+    CASE
+      WHEN dist_to_japanese_poi_m <= 300 THEN 100.0
+      WHEN dist_to_japanese_poi_m >= 1500 THEN 0.0
+      ELSE 100.0 - ((dist_to_japanese_poi_m - 300) / 12.0)
+    END AS score_japanese_poi,
 
--- 5. 最寄りスーパーまでの距離（OSM）
-nearest_supermarkets AS (
-  SELECT
-    p.postcode,
-    MIN(ST_DISTANCE(p.geom, sm.geom)) AS dist_to_nearest_supermarket_m
-  FROM
-    base_postcodes p
-  CROSS JOIN
-    ${ref("stg_supermarkets")} sm
-  GROUP BY
-    p.postcode
-),
+    CASE
+      WHEN dist_to_nearest_supermarket_m <= 200 THEN 100.0
+      WHEN dist_to_nearest_supermarket_m >= 800 THEN 0.0
+      ELSE 100.0 - ((dist_to_nearest_supermarket_m - 200) / 6.0)
+    END AS score_supermarket,
 
--- 6. 半径500m以内の犯罪件数（ST_DWITHIN）
-crimes_500m AS (
-  SELECT
-    p.postcode,
-    COUNT(c.geom) AS crime_count_500m
-  FROM
-    base_postcodes p
-  LEFT JOIN
-    ${ref("stg_crimes")} c
-  ON
-    ST_DWITHIN(p.geom, c.geom, 500)
-  GROUP BY
-    p.postcode
-),
+    CASE
+      WHEN crime_count_500m <= 50 THEN 100.0
+      WHEN crime_count_500m >= 300 THEN 0.0
+      ELSE 100.0 - ((crime_count_500m - 50) / 2.5)
+    END AS score_safety,
 
--- 7. PTAL 公共交通利便性（ST_DISTANCE で最寄りの100mメッシュ値を空間結合）
-nearest_ptal AS (
-  SELECT
-    p.postcode,
-    ARRAY_AGG(
-      STRUCT(
-        pt.ptal_score,
-        pt.ptal_rating,
-        ST_DISTANCE(p.geom, pt.geom) AS dist_meters
-      )
-      ORDER BY ST_DISTANCE(p.geom, pt.geom) ASC
-      LIMIT 1
-    )[OFFSET(0)] AS ptal
+    CASE
+      WHEN avg_epc_efficiency_score >= 100 THEN 100.0
+      WHEN avg_epc_efficiency_score <= 0 THEN 0.0
+      ELSE CAST(avg_epc_efficiency_score AS FLOAT64)
+    END AS score_epc
+
   FROM
-    base_postcodes p
-  CROSS JOIN
-    ${ref("stg_ptal")} pt
-  GROUP BY
-    p.postcode
+    current_mart
 )
 
--- 最終結合: ポストコードを軸に全指標を統合
 SELECT
-  p.postcode,
-  p.latitude,
-  p.longitude,
-  p.geom,
+  -- 元のテーブルのカラムをすべてそのまま展開
+  m.*,
 
-  -- 交通利便性・最寄り駅
-  ns.nearest_station.station_name AS nearest_station_name,
-  ns.nearest_station.primary_lines AS nearest_station_lines,
-  ns.nearest_station.dist_meters AS dist_to_station_m,
-  ns.nearest_station.mins_to_bond_street,
-  ns.nearest_station.mins_to_bank,
-  ns.nearest_station.mins_to_canary_wharf,
-  ns.nearest_station.mins_to_waterloo,
+  -- 光熱費の推計値
+  f.estimated_monthly_energy_cost_gbp,
 
-  -- TfL PTAL（公共交通アクセシビリティ評価）
-  np.ptal.ptal_score,
-  np.ptal.ptal_rating,
+  -- 各要素の標準化スコア（0〜100点）
+  ROUND(f.score_transit, 1) AS score_transit,
+  ROUND(f.score_station_dist, 1) AS score_station_dist,
+  ROUND(f.score_japanese_poi, 1) AS score_japanese_poi,
+  ROUND(f.score_supermarket, 1) AS score_supermarket,
+  ROUND(f.score_safety, 1) AS score_safety,
+  ROUND(f.score_epc, 1) AS score_epc,
 
-  -- 日常生活・日系インフラ
-  jp.nearest_poi.poi_name AS nearest_japanese_poi_name,
-  jp.nearest_poi.category AS nearest_japanese_poi_category,
-  jp.nearest_poi.dist_meters AS dist_to_japanese_poi_m,
-  sm.dist_to_nearest_supermarket_m,
+  -- 1. DINKS / 単身世帯向けスコア
+  ROUND(
+    (f.score_transit * 0.35) +
+    (f.score_station_dist * 0.25) +
+    (f.score_supermarket * 0.20) +
+    (f.score_safety * 0.10) +
+    (f.score_epc * 0.10),
+    1
+  ) AS score_dinks,
 
-  -- 治安
-  COALESCE(cr.crime_count_500m, 0) AS crime_count_500m,
+  -- 2. 未就学児〜低学年ファミリー世帯向けスコア
+  ROUND(
+    (f.score_japanese_poi * 0.35) +
+    (f.score_safety * 0.25) +
+    (f.score_epc * 0.15) +
+    (f.score_supermarket * 0.15) +
+    (f.score_transit * 0.10),
+    1
+  ) AS score_family_young,
 
-  -- 住宅性能（同一住所の最新検査のみを集計した平均スコア 1-100）
-  epc.avg_epc_efficiency_score,
-  epc.epc_sample_count
+  -- 3. 中高生・複数子ファミリー世帯向けスコア
+  ROUND(
+    (f.score_station_dist * 0.25) +
+    (f.score_safety * 0.25) +
+    (f.score_epc * 0.20) +
+    (f.score_transit * 0.15) +
+    (f.score_japanese_poi * 0.15),
+    1
+  ) AS score_family_senior
 
 FROM
-  base_postcodes p
-LEFT JOIN
-  nearest_stations ns ON p.postcode = ns.postcode
-LEFT JOIN
-  nearest_ptal np ON p.postcode = np.postcode
-LEFT JOIN
-  nearest_japanese_pois jp ON p.postcode = jp.postcode
-LEFT JOIN
-  nearest_supermarkets sm ON p.postcode = sm.postcode
-LEFT JOIN
-  crimes_500m cr ON p.postcode = cr.postcode
-LEFT JOIN
-  epc_summary epc ON p.clean_postcode = epc.clean_postcode
+  current_mart AS m
+INNER JOIN
+  calculated_features AS f
+  ON m.postcode = f.postcode
