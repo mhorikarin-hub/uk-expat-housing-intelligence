@@ -2,10 +2,73 @@ config {
   type: "view",
   schema: "uk_housing_acton",
   name: "dim_acton_facilities",
-  description: "Unified facility landmark view with postcode: Japanese infrastructure, supermarkets, and stations"
+  description: "Unified facility landmark view with nearest postcode: Japanese infrastructure, supermarkets, and stations"
 }
 
--- 1. 日系施設（学校・塾・カフェ・店舗）
+WITH
+-- 1. スーパーマーケット：最寄りポストコードを空間結合
+supermarkets_raw AS (
+  SELECT
+    sm.brand AS sub_category,
+    sm.name AS facility_name,
+    COALESCE(sm.brand, 'Other Supermarket') AS facility_detail,
+    sm.latitude,
+    sm.longitude,
+    sm.geom,
+    ROW_NUMBER() OVER (ORDER BY sm.name, sm.latitude) AS poi_id
+  FROM
+    ${ref("stg_supermarkets")} sm
+),
+
+supermarkets_with_pc AS (
+  SELECT
+    sm.sub_category,
+    sm.facility_name,
+    sm.facility_detail,
+    sm.latitude,
+    sm.longitude,
+    ANY_VALUE(sm.geom) AS geom,
+    ARRAY_AGG(p.postcode ORDER BY ST_DISTANCE(sm.geom, p.geom) ASC LIMIT 1)[OFFSET(0)] AS postcode
+  FROM
+    supermarkets_raw sm
+  CROSS JOIN
+    ${ref("stg_postcodes")} p
+  GROUP BY
+    sm.poi_id, sm.sub_category, sm.facility_name, sm.facility_detail, sm.latitude, sm.longitude
+),
+
+-- 2. 主要駅：最寄りポストコードを空間結合
+stations_raw AS (
+  SELECT
+    s.primary_lines AS sub_category,
+    s.station_name AS facility_name,
+    s.primary_lines AS facility_detail,
+    s.latitude,
+    s.longitude,
+    s.geom,
+    ROW_NUMBER() OVER (ORDER BY s.station_name) AS station_id
+  FROM
+    ${ref("stg_stations")} s
+),
+
+stations_with_pc AS (
+  SELECT
+    s.sub_category,
+    s.facility_name,
+    s.facility_detail,
+    s.latitude,
+    s.longitude,
+    ANY_VALUE(s.geom) AS geom,
+    ARRAY_AGG(p.postcode ORDER BY ST_DISTANCE(s.geom, p.geom) ASC LIMIT 1)[OFFSET(0)] AS postcode
+  FROM
+    stations_raw s
+  CROSS JOIN
+    ${ref("stg_postcodes")} p
+  GROUP BY
+    s.station_id, s.sub_category, s.facility_name, s.facility_detail, s.latitude, s.longitude
+)
+
+-- 統合
 SELECT
   'Japanese Facility' AS category_en,
   '日系施設' AS category_ja,
@@ -21,32 +84,30 @@ FROM
 
 UNION ALL
 
--- 2. スーパーマーケット（Waitrose, Sainsbury's, Morrisons等）
 SELECT
   'Supermarket' AS category_en,
   'スーパーマーケット' AS category_ja,
-  brand AS sub_category,
-  name AS facility_name,
-  COALESCE(brand, 'Other Supermarket') AS facility_detail,
+  sub_category,
+  facility_name,
+  facility_detail,
   postcode,
   latitude,
   longitude,
   geom
 FROM
-  ${ref("stg_supermarkets")}
+  supermarkets_with_pc
 
 UNION ALL
 
--- 3. 主要駅（チューブ・Overground・Elizabeth Line）
 SELECT
   'Station' AS category_en,
   '駅' AS category_ja,
-  primary_lines AS sub_category,
-  station_name AS facility_name,
-  primary_lines AS facility_detail,
+  sub_category,
+  facility_name,
+  facility_detail,
   postcode,
   latitude,
   longitude,
   geom
 FROM
-  ${ref("stg_stations")}
+  stations_with_pc
