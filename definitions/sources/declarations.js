@@ -6,7 +6,8 @@ const rawTables = [
   "raw_osm_supermarkets",
   "raw_tfl_ptal",
   "raw_japanese_pois",
-  "raw_station_commute" 
+  "raw_station_commute", 
+  "raw_ons_district_rents"
 ];
 
 rawTables.forEach((table) => {

@@ -2,11 +2,24 @@ config {
   type: "table",
   schema: "uk_housing_acton",
   name: "mart_acton_housing_scores_final",
-  description: "アクトン地区のポストコード単位における住宅環境スコア、月額想定光熱費、ペルソナ別総合スコアを含むマートテーブル",
+  description: "アクトン地区のポストコード単位における住宅環境スコア、月額想定光熱費、ペルソナ別総合スコア、間取り別基準家賃を含むマートテーブル",
   tags: ["mart", "housing", "scores"]
 }
 
-WITH current_mart AS (
+WITH ons_district_rents AS (
+  -- 間取り別家賃を横持ち（PIVOT）に集計
+  SELECT
+    postcode_district,
+    MAX(CASE WHEN bedroom_category = 'One Bedroom' THEN median END) AS rent_1bed_median,
+    MAX(CASE WHEN bedroom_category = 'Two Bedrooms' THEN median END) AS rent_2bed_median,
+    MAX(CASE WHEN bedroom_category = 'Three Bedrooms' THEN median END) AS rent_3bed_median
+  FROM
+    ${ref("raw_ons_district_rents")}
+  GROUP BY
+    postcode_district
+),
+
+current_mart AS (
   SELECT
     *
   FROM
@@ -71,7 +84,7 @@ calculated_features AS (
 )
 
 SELECT
-  -- 元のテーブルのカラムをすべてそのまま展開
+  -- 元のテーブルのカラムをすべて展開
   m.*,
 
   -- 光熱費の推計値
@@ -113,10 +126,18 @@ SELECT
     (f.score_transit * 0.15) +
     (f.score_japanese_poi * 0.15),
     1
-  ) AS score_family_senior
+  ) AS score_family_senior,
+
+  -- 4. ONS Postcode District 基準家賃（中央値）
+  rents.rent_1bed_median,
+  rents.rent_2bed_median,
+  rents.rent_3bed_median
 
 FROM
   current_mart AS m
 INNER JOIN
   calculated_features AS f
   ON m.postcode = f.postcode
+LEFT JOIN
+  ons_district_rents AS rents
+  ON SPLIT(m.postcode, ' ')[OFFSET(0)] = rents.postcode_district
