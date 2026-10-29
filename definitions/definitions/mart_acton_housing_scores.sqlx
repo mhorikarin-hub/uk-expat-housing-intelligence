@@ -131,8 +131,15 @@ SELECT
   -- 4. ONS Postcode District 基準家賃（中央値）
   rents.rent_1bed_median,
   rents.rent_2bed_median,
-  rents.rent_3bed_median
+  rents.rent_3bed_median,
 
+-- ★修正：建物状態（EPC効率スコア）で補正した「ポストコード別推計2Bed家賃」
+  ROUND(
+    rents.rent_2bed_median * (1.0 + (m.avg_epc_efficiency_score - 60.0) * 0.006),
+    0
+  ) AS estimated_rent_2bed_adjusted
+
+ 
 FROM
   current_mart AS m
 INNER JOIN
